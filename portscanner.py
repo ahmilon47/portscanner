@@ -1,165 +1,155 @@
-#!/usr/bin/env python3
-"""
-portscanner.py
-Simple threaded TCP port scanner with optional banner grab.
-
-Usage examples:
-    python portscanner.py --host example.com --start 1 --end 1024
-    python portscanner.py --host 192.168.1.10 --ports 22,80,443
-    python portscanner.py --host example.com --common
-
-Notes:
-- This tool is for authorized testing only. Do not scan systems without permission.
-- Uses only Python standard library (no extra pip packages required).
-"""
-
+# portscanner.py (Upgraded Version)
 import socket
 import argparse
-import concurrent.futures
-import sys
-import time
+from concurrent.futures import ThreadPoolExecutor
+import json
+import datetime
+import re
 
-# Default timeout for socket connect (seconds)
-SOCKET_TIMEOUT = 1.5
+# ------------------------
+# Service Detection (basic)
+# ------------------------
+SERVICE_PORTS = {
+    21: "FTP",
+    22: "SSH",
+    23: "Telnet",
+    25: "SMTP",
+    53: "DNS",
+    80: "HTTP",
+    110: "POP3",
+    139: "NetBIOS",
+    143: "IMAP",
+    443: "HTTPS",
+    445: "SMB",
+    3389: "RDP"
+}
 
-# Common ports list (small subset, extendable)
-COMMON_PORTS = [
-    20,21,22,23,25,53,67,68,69,80,110,123,137,138,139,143,161,162,179,
-    389,443,445,465,514,587,636,873,993,995,2049,3306,3389,5432,5900,6379,8080,8443
-]
-
-
-def parse_ports(ports_str):
-    """Parse ports argument like '22,80,8000-8100'"""
-    ports = set()
-    parts = ports_str.split(',')
-    for p in parts:
-        p = p.strip()
-        if not p:
-            continue
-        if '-' in p:
-            try:
-                a, b = p.split('-', 1)
-                a0 = int(a); b0 = int(b)
-                ports.update(range(a0, b0 + 1))
-            except ValueError:
-                continue
-        else:
-            try:
-                ports.add(int(p))
-            except ValueError:
-                continue
-    return sorted(p for p in ports if 1 <= p <= 65535)
-
-
-def grab_banner(host, port):
-    """Try to read a small banner from an open socket."""
+# ------------------------
+# Scan a single port
+# ------------------------
+def scan_port(host, port, timeout=1):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(1.0)
-            s.connect((host, port))
-            try:
-                data = s.recv(1024)
-                if data:
-                    return data.decode(errors='replace').strip()
-            except socket.timeout:
-                return ""
-            except Exception:
-                return ""
-    except Exception:
-        return ""
-
-
-def scan_port(host, port):
-    """Return tuple (port, is_open, banner_or_err)"""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(SOCKET_TIMEOUT)
-            res = s.connect_ex((host, port))
-            if res == 0:
-                banner = grab_banner(host, port)
-                return (port, True, banner)
+            s.settimeout(timeout)
+            result = s.connect_ex((host, port))
+            if result == 0:
+                banner = grab_banner(s)
+                service = SERVICE_PORTS.get(port, "Unknown")
+                return {"port": port, "state": "Open", "banner": banner, "service": service}
             else:
-                return (port, False, "")
-    except Exception as e:
-        return (port, False, f"error:{e}")
+                return {"port": port, "state": "Closed", "banner": None, "service": None}
+    except Exception:
+        return {"port": port, "state": "Filtered", "banner": None, "service": None}
 
-
-def run_scan(host, ports, workers=100, show_closed=False):
-    results = []
-    start_time = time.time()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-        future_to_port = {ex.submit(scan_port, host, p): p for p in ports}
-        for fut in concurrent.futures.as_completed(future_to_port):
-            p = future_to_port[fut]
-            try:
-                port, is_open, info = fut.result()
-                if is_open or show_closed:
-                    results.append((port, is_open, info))
-            except Exception as e:
-                results.append((p, False, f"exception:{e}"))
-    duration = time.time() - start_time
-    results.sort(key=lambda x: x[0])
-    return results, duration
-
-
-def human_readable_results(results, host, duration):
-    open_count = sum(1 for r in results if r[1])
-    lines = []
-    lines.append(f"Scan results for {host} — scanned {len(results)} ports in {duration:.2f}s — open: {open_count}")
-    lines.append("=" * 70)
-    for port, is_open, info in results:
-        if is_open:
-            line = f"[OPEN]  {port:<6} {info if info else ''}"
-        else:
-            line = f"[closed] {port:<6}"
-        lines.append(line)
-    return "\n".join(lines)
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Simple threaded TCP Port Scanner")
-    parser.add_argument("--host", "-H", required=True, help="Target host or IP")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--start", type=int, help="Start port (use with --end)")
-    group.add_argument("--ports", help="Comma separated ports and ranges (e.g. 22,80,8000-8100)")
-    group.add_argument("--common", action="store_true", help="Scan a list of common ports")
-    parser.add_argument("--end", type=int, help="End port (use with --start)")
-    parser.add_argument("--workers", type=int, default=200, help="Concurrent worker threads (default 200)")
-    parser.add_argument("--show-closed", action="store_true", help="Show closed ports in output")
-    args = parser.parse_args()
-
-    # Resolve host to IP
+# ------------------------
+# Banner grab
+# ------------------------
+def grab_banner(sock):
     try:
-        ip = socket.gethostbyname(args.host)
-    except Exception as e:
-        print(f"Error resolving host '{args.host}': {e}")
-        sys.exit(1)
+        sock.send(b'Hello\r\n')
+        banner = sock.recv(1024).decode().strip()
+        return banner
+    except Exception:
+        return None
 
-    # Build port list
-    if args.ports:
-        ports = parse_ports(args.ports)
-    elif args.common:
-        ports = COMMON_PORTS
+# ------------------------
+# Scan multiple ports
+# ------------------------
+def scan_ports(host, ports, workers=100):
+    results = []
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(scan_port, host, port) for port in ports]
+        for future in futures:
+            results.append(future.result())
+    return results
+
+# ------------------------
+# Save scan report as JSON
+# ------------------------
+def save_report(host, results, filename=None):
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    report = {
+        "host": host,
+        "timestamp": timestamp,
+        "results": results
+    }
+    if filename is None:
+        filename = f"scan_{host}_{timestamp}.json"
+    with open(filename, "w") as f:
+        json.dump(report, f, indent=4)
+    print(f"[+] Scan report saved as {filename}")
+
+# ------------------------
+# Argument parsing
+# ------------------------
+def parse_args():
+    parser = argparse.ArgumentParser(description="Upgraded Python Port Scanner with Banner Grab & Service Detection")
+    parser.add_argument("--host", help="Target host IP or domain")
+    parser.add_argument("--interactive", action="store_true", help="Enable interactive mode")
+    parser.add_argument("--ports", help="Comma-separated list of ports to scan (e.g., 22,80,443)")
+    parser.add_argument("--start", type=int, help="Start port for range scan")
+    parser.add_argument("--end", type=int, help="End port for range scan")
+    parser.add_argument("--common", action="store_true", help="Scan common ports only")
+    parser.add_argument("--workers", type=int, default=200, help="Number of concurrent workers")
+    parser.add_argument("--save", action="store_true", help="Save scan report as JSON")
+    return parser.parse_args()
+
+# ------------------------
+# Interactive mode
+# ------------------------
+def interactive_mode():
+    host = input("Enter host to scan: ").strip()
+    choice = input("Scan common ports, custom ports, or range? [common/custom/range]: ").strip().lower()
+    ports = []
+    if choice == "common":
+        ports = [21,22,23,25,53,80,110,139,143,443,445,3389]
+    elif choice == "custom":
+        ports_input = input("Enter comma-separated ports: ").strip()
+        ports = [int(p.strip()) for p in ports_input.split(",")]
+    elif choice == "range":
+        start = int(input("Start port: ").strip())
+        end = int(input("End port: ").strip())
+        ports = list(range(start, end+1))
     else:
-        if args.start is None or args.end is None:
-            print("When using --start you must also supply --end")
-            sys.exit(1)
-        s = max(1, args.start)
-        e = min(65535, args.end)
-        if e < s:
-            print("End must be >= start")
-            sys.exit(1)
-        ports = list(range(s, e + 1))
+        print("Invalid choice!")
+        return host, ports
+    return host, ports
 
-    if not ports:
-        print("No valid ports to scan.")
-        sys.exit(1)
+# ------------------------
+# Main
+# ------------------------
+def main():
+    args = parse_args()
 
-    print(f"Scanning {args.host} ({ip}) ports: {ports[0]}..{ports[-1]}  workers={args.workers}")
-    results, duration = run_scan(ip, ports, workers=args.workers, show_closed=args.show_closed)
-    print(human_readable_results(results, args.host, duration))
+    if args.interactive:
+        host, ports = interactive_mode()
+    else:
+        host = args.host
+        if args.common:
+            ports = [21,22,23,25,53,80,110,139,143,443,445,3389]
+        elif args.ports:
+            ports = [int(p.strip()) for p in args.ports.split(",")]
+        elif args.start and args.end:
+            ports = list(range(args.start, args.end+1))
+        else:
+            print("Error: specify --interactive, --common, --ports, or --start/--end")
+            return
 
+    print(f"Scanning {host} ports: {ports}  workers={args.workers}")
+    results = scan_ports(host, ports, args.workers)
+
+    # Print results
+    for r in results:
+        if r["state"] == "Open":
+            banner_str = f" | Banner: {r['banner']}" if r['banner'] else ""
+            service_str = f" | Service: {r['service']}" if r['service'] else ""
+            print(f"[{r['port']}] Open{service_str}{banner_str}")
+        else:
+            print(f"[{r['port']}] {r['state']}")
+
+    # Save report
+    if args.save:
+        save_report(host, results)
 
 if __name__ == "__main__":
     main()
