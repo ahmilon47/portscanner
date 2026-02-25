@@ -1,23 +1,22 @@
-# PortScanner — Simple Threaded TCP Port Scanner
+# Python Port Scanner 🔍
 
-A minimal, educational port scanner written in Python (standard library only).  
-Use it to learn network scanning and banner grabbing in a safe, local environment.
+An upgraded Python port scanner with interactive mode, banner grabbing, service detection, and JSON reporting.  
 
-## Features
-- Threaded TCP port scanning (fast)
-- Parse ports like `22,80,8000-8100`
-- Quick banner grab for open ports (best-effort)
-- No external dependencies (only Python standard library)
+---
 
-## Requirements
-- Python 3.8+
+## Features ✅
 
-## How to run
+- Scan common ports, custom ports, or a range of ports
+- Detect basic services on open ports (FTP, SSH, HTTP, etc.)
+- Grab banners from open ports
+- Interactive mode for easy input
+- Save scan reports as JSON
+- Configure number of concurrent workers
+- Compatible with Python 3
+
+---
+
+## Installation 💻
+
 ```bash
-# go to project folder
-cd "C:/Users/HP/OneDrive/Desktop/python"
-
-# Examples:
-python portscanner.py --host 127.0.0.1 --common
-python portscanner.py --host scanme.nmap.org --ports 22,80,443
-python portscanner.py --host 192.168.1.1 --start 1 --end 1024 --workers 200
+pip install requests
